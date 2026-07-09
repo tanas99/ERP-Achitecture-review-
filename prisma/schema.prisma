@@ -1,0 +1,1179 @@
+// ============================================================================
+// Tana's Bakery Shop ERP — Prisma schema
+// Phase 1 · Milestone 1 (review gate) — v2 with CRM/Leads + snapshots + tasks
+// ----------------------------------------------------------------------------
+// Conventions (see ARCHITECTURE.md):
+//  - IDs: cuid(). Money: integer CENTS (USD), field suffix *Cents. Never floats.
+//  - Time: stored UTC; displayed America/Guayaquil.
+//  - Multi-tenant: every tenant-scoped table has companyId (MVP = 1 company).
+//  - Soft delete: deletedAt. Audit fields: createdAt/updatedAt + createdById/updatedById.
+//  - Full change history: AuditLog (compliance) + *StatusHistory + CustomerTimeline (CRM).
+//  - CRM flow: Lead (source) -> Quotation -> Customer -> Order.
+//    A Lead becomes a Customer when the FIRST quotation is ACCEPTED or the FIRST payment
+//    is received (whichever comes first) — NOT after a completed order.
+//    A Lead does NOT auto-become a Customer. Orders keep an immutable customer snapshot.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// TENANT
+// ===========================================================================
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users             User[]
+  leads             Lead[]
+  customers         Customer[]
+  tags              Tag[]
+  customerNotes     CustomerNote[]
+  customerTimeline  CustomerTimelineEntry[]
+  products          Product[]
+  quotations        Quotation[]
+  orders            Order[]
+  productionOrders  ProductionOrder[]
+  productionTasks   ProductionTask[]
+  calendarEntries   CalendarEntry[]
+  electronicDocs    ElectronicDocument[]
+  taxRates          TaxRate[]
+  documentSequences DocumentSequence[]
+  billingConfig     BillingConfig?
+  mediaObjects      MediaObject[]
+  notifications     Notification[]
+  settings          Setting[]
+  featureFlags      FeatureFlag[]
+  integrations      Integration[]
+  activityEntries   ActivityEntry[]
+  auditLogs         AuditLog[]
+
+  @@map("companies")
+}
+
+// ===========================================================================
+// IDENTITY — users, roles, permissions (+ Auth.js tables)
+// ===========================================================================
+
+enum RoleName {
+  ADMINISTRADOR
+  VENTAS
+  PRODUCCION
+  MARKETING
+  CONTABILIDAD
+  REPARTIDOR
+}
+
+model User {
+  id           String    @id @default(cuid())
+  companyId    String
+  email        String    @unique
+  name         String
+  passwordHash String? // Argon2id (Credentials provider)
+  isActive     Boolean   @default(true)
+  mfaSecret    String? // TOTP — provisioned, enforced for ADMINISTRADOR later
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  company  Company    @relation(fields: [companyId], references: [id])
+  roles    UserRole[]
+  accounts Account[]
+  sessions Session[]
+
+  @@index([companyId])
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  name        RoleName         @unique
+  description String?
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  key         String           @unique // e.g. "orders:write", "production:update-status"
+  description String?
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// Auth.js (NextAuth) — database sessions
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ===========================================================================
+// CRM — LEADS (before customers)
+// ===========================================================================
+
+enum LeadSource {
+  INSTAGRAM
+  TIKTOK
+  FACEBOOK
+  GOOGLE
+  WEBSITE
+  WHATSAPP
+  REFERIDO
+  WALK_IN
+  EVENTO
+  CORPORATIVO
+  OTRO
+}
+
+enum LeadStatus {
+  NUEVO
+  CONTACTADO
+  COTIZADO
+  EN_NEGOCIACION
+  GANADO
+  PERDIDO
+}
+
+enum LeadActivityType {
+  LLAMADA
+  WHATSAPP
+  MENSAJE
+  CORREO
+  REUNION
+  NOTA
+  OTRO
+}
+
+// Reused for both Lead loss and Quotation loss (CRM analytics later)
+enum LostReason {
+  PRECIO
+  SIN_RESPUESTA
+  COMPRO_EN_OTRO_LADO
+  EVENTO_CANCELADO
+  OTRO
+}
+
+model Lead {
+  id                  String      @id @default(cuid())
+  companyId           String
+  name                String
+  source              LeadSource  @default(OTRO)
+  status              LeadStatus  @default(NUEVO)
+  assignedToId        String? // salesperson (User id)
+  phone               String? // WhatsApp
+  email               String?
+  socialHandle        String? // IG / TikTok handle
+  referredBy          String?
+  lastContactAt       DateTime?
+  nextFollowUpAt      DateTime?
+  convertedAt         DateTime? // set when it becomes a Customer
+  convertedCustomerId String?     @unique
+  lostReason          LostReason?
+  lostReasonNote      String?
+  notes               String?
+  createdAt           DateTime    @default(now())
+  createdById         String?
+  updatedAt           DateTime    @updatedAt
+  deletedAt           DateTime?
+
+  company           Company        @relation(fields: [companyId], references: [id])
+  convertedCustomer Customer?      @relation("LeadConversion", fields: [convertedCustomerId], references: [id])
+  activities        LeadActivity[]
+  quotations        Quotation[]
+  orders            Order[]
+
+  @@index([companyId, status])
+  @@index([companyId, assignedToId])
+  @@index([companyId, nextFollowUpAt])
+  @@map("leads")
+}
+
+model LeadActivity {
+  id          String           @id @default(cuid())
+  leadId      String
+  type        LeadActivityType @default(NOTA)
+  summary     String
+  occurredAt  DateTime         @default(now())
+  createdById String?
+  createdAt   DateTime         @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, occurredAt])
+  @@map("lead_activities")
+}
+
+// ===========================================================================
+// CRM — CUSTOMERS (created only after first confirmed order)
+// ===========================================================================
+
+enum IdentificationType {
+  RUC
+  CEDULA
+  PASAPORTE
+  CONSUMIDOR_FINAL
+}
+
+model Customer {
+  id                 String             @id @default(cuid())
+  companyId          String
+  name               String
+  identificationType IdentificationType @default(CONSUMIDOR_FINAL)
+  identification     String? // validated per type at application layer
+  email              String?
+  phone              String? // WhatsApp
+  notes              String? // quick note; rich notes -> CustomerNote
+  becameCustomerAt   DateTime? // when the lead converted (1st quote accepted or 1st payment)
+  createdAt          DateTime           @default(now())
+  createdById        String?
+  updatedAt          DateTime           @updatedAt
+  updatedById        String?
+  deletedAt          DateTime?
+
+  company           Company                 @relation(fields: [companyId], references: [id])
+  convertedFromLead Lead?                   @relation("LeadConversion")
+  addresses         CustomerAddress[]
+  tags              CustomerTag[]
+  customerNotes     CustomerNote[]
+  timeline          CustomerTimelineEntry[]
+  quotations        Quotation[]
+  orders            Order[]
+
+  @@index([companyId])
+  @@index([companyId, name])
+  @@map("customers")
+}
+
+model CustomerAddress {
+  id         String    @id @default(cuid())
+  customerId String
+  label      String // "Casa", "Oficina", "Lugar del evento"
+  address    String
+  zone       String? // Guayaquil zone
+  reference  String? // landmark / instructions
+  isDefault  Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  orders   Order[] // orders that selected this address (snapshot also stored on order)
+
+  @@index([customerId])
+  @@map("customer_addresses")
+}
+
+// Tags: power CRM filters, reports, marketing segmentation (VIP, Corporate, etc.)
+model Tag {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  color     String?
+  createdAt DateTime @default(now())
+
+  company   Company       @relation(fields: [companyId], references: [id])
+  customers CustomerTag[]
+
+  @@unique([companyId, name])
+  @@map("tags")
+}
+
+model CustomerTag {
+  customerId String
+  tagId      String
+  assignedAt DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  tag      Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([customerId, tagId])
+  @@map("customer_tags")
+}
+
+model CustomerNote {
+  id          String   @id @default(cuid())
+  companyId   String
+  customerId  String
+  body        String
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  company  Company  @relation(fields: [companyId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, createdAt])
+  @@map("customer_notes")
+}
+
+// CRM-facing chronological history (DISTINCT from AuditLog). A read projection
+// written as domain events happen: leads, quotes, orders, payments, deliveries,
+// documents, notes, attachments, activities.
+enum CustomerTimelineType {
+  LEAD
+  COTIZACION
+  PEDIDO
+  PAGO
+  ENTREGA
+  DOCUMENTO
+  NOTA
+  ADJUNTO
+  ACTIVIDAD
+  LLAMADA
+  MENSAJE
+  CORREO
+  NOTA_INTERNA
+}
+
+model CustomerTimelineEntry {
+  id          String               @id @default(cuid())
+  companyId   String
+  customerId  String
+  type        CustomerTimelineType
+  title       String // Spanish, human-readable
+  refType     String? // "order" | "quotation" | "payment" | ...
+  refId       String?
+  occurredAt  DateTime             @default(now())
+  createdById String?
+  createdAt   DateTime             @default(now())
+
+  company  Company  @relation(fields: [companyId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, occurredAt])
+  @@map("customer_timeline_entries")
+}
+
+// ===========================================================================
+// CATALOG — products & prices (MVP: source of truth for pricing)
+// ===========================================================================
+
+enum ProductCategory {
+  PASTEL_PERSONALIZADO
+  VINTAGE_CAKE
+  BENTO_CAKE
+  CUPCAKE
+  GALLETA
+  BROWNIE
+  CHEESECAKE
+  OTRO
+}
+
+model Product {
+  id          String          @id @default(cuid())
+  companyId   String
+  name        String
+  category    ProductCategory @default(OTRO)
+  description String?
+  isActive    Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  deletedAt   DateTime?
+
+  company        Company         @relation(fields: [companyId], references: [id])
+  prices         ProductPrice[]
+  quotationItems QuotationItem[]
+  orderItems     OrderItem[]
+
+  @@index([companyId])
+  @@map("products")
+}
+
+model ProductPrice {
+  id            String    @id @default(cuid())
+  productId     String
+  priceCents    Int
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, effectiveFrom])
+  @@map("product_prices")
+}
+
+// ===========================================================================
+// QUOTATIONS — belong to a Lead (pre-customer) or a Customer
+// ===========================================================================
+
+enum QuotationStatus {
+  BORRADOR
+  ENVIADA
+  APROBADA
+  RECHAZADA
+  PERDIDA
+  EXPIRADA
+}
+
+model Quotation {
+  id             String          @id @default(cuid())
+  companyId      String
+  leadId         String?
+  customerId     String?
+  number         Int
+  status         QuotationStatus @default(BORRADOR)
+  subtotalCents  Int             @default(0)
+  taxCents       Int             @default(0)
+  totalCents     Int             @default(0)
+  validUntil     DateTime?
+  lostReason     LostReason?
+  lostReasonNote String?
+  notes          String?
+  createdAt      DateTime        @default(now())
+  createdById    String?
+  updatedAt      DateTime        @updatedAt
+  updatedById    String?
+  deletedAt      DateTime?
+
+  company  Company         @relation(fields: [companyId], references: [id])
+  lead     Lead?           @relation(fields: [leadId], references: [id])
+  customer Customer?       @relation(fields: [customerId], references: [id])
+  items    QuotationItem[]
+  order    Order? // set once approved & converted
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@map("quotations")
+}
+
+model QuotationItem {
+  id             String  @id @default(cuid())
+  quotationId    String
+  productId      String?
+  description    String
+  quantity       Int     @default(1)
+  unitPriceCents Int
+  lineTotalCents Int
+  attributes     Json? // size, flavor, filling, decoration, reference image, etc.
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  product   Product?  @relation(fields: [productId], references: [id])
+
+  @@index([quotationId])
+  @@map("quotation_items")
+}
+
+// ===========================================================================
+// ORDERS — commercial status + payment + delivery + priority + event + snapshot
+// ===========================================================================
+
+enum OrderStatus {
+  COTIZACION
+  ESPERANDO_ANTICIPO
+  CONFIRMADO
+  EN_PRODUCCION
+  LISTO
+  EN_ENTREGA
+  ENTREGADO
+  CANCELADO
+}
+
+enum OrderPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum PaymentStatus {
+  SIN_PAGO
+  RESERVA // $10
+  ANTICIPO // 50%
+  PAGADO_TOTAL
+  REEMBOLSADO
+}
+
+enum PaymentTier {
+  RESERVA
+  ANTICIPO
+  SALDO
+  TOTAL
+  REEMBOLSO
+}
+
+enum PaymentMethod {
+  EFECTIVO
+  TRANSFERENCIA
+  TARJETA
+  OTRO
+}
+
+enum EventType {
+  CUMPLEANOS
+  BODA
+  BABY_SHOWER
+  CORPORATIVO
+  GRADUACION
+  OTRO
+}
+
+model Order {
+  id                String        @id @default(cuid())
+  companyId         String
+  leadId            String? // origin lead (before customer exists)
+  customerId        String? // set at/after first confirmed order
+  customerAddressId String? // which address was selected (nullable)
+  quotationId       String?       @unique
+  number            Int
+  status            OrderStatus   @default(ESPERANDO_ANTICIPO)
+  priority          OrderPriority @default(NORMAL)
+  paymentStatus     PaymentStatus @default(SIN_PAGO)
+
+  // ---- Immutable customer snapshot (historical orders never change) ----
+  customerNameSnapshot           String
+  customerPhoneSnapshot          String?
+  customerEmailSnapshot          String?
+  customerIdentificationSnapshot String?
+  customerIdTypeSnapshot         IdentificationType?
+
+  // ---- Immutable delivery snapshot ----
+  deliveryAddressSnapshot   String?
+  deliveryZoneSnapshot      String?
+  deliveryCourierSnapshot   String?
+  deliveryFeeCentsSnapshot  Int?
+
+  // ---- Event information (reporting / reminders / marketing later) ----
+  eventType EventType?
+  eventName String?
+  eventDate DateTime?
+  eventTime String? // "HH:mm" local
+
+  // ---- Money ----
+  subtotalCents Int @default(0)
+  taxCents      Int @default(0)
+  totalCents    Int @default(0)
+  paidCents     Int @default(0)
+  balanceCents  Int @default(0) // totalCents - paidCents
+
+  dueDate     DateTime? // requested delivery/pickup date
+  notes       String?
+  createdAt   DateTime  @default(now())
+  createdById String?
+  updatedAt   DateTime  @updatedAt
+  updatedById String?
+  deletedAt   DateTime?
+
+  company         Company              @relation(fields: [companyId], references: [id])
+  lead            Lead?                @relation(fields: [leadId], references: [id])
+  customer        Customer?            @relation(fields: [customerId], references: [id])
+  customerAddress CustomerAddress?     @relation(fields: [customerAddressId], references: [id])
+  quotation       Quotation?           @relation(fields: [quotationId], references: [id])
+  items           OrderItem[]
+  payments        Payment[]
+  delivery        Delivery?
+  productionOrder ProductionOrder?
+  statusHistory   OrderStatusHistory[]
+  electronicDocs  ElectronicDocument[]
+  attachments     MediaObject[] // multiple file attachments (reference photos, etc.)
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([companyId, priority])
+  @@index([companyId, dueDate])
+  @@index([companyId, eventDate])
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String  @id @default(cuid())
+  orderId        String
+  productId      String?
+  description    String
+  quantity       Int     @default(1)
+  unitPriceCents Int // SNAPSHOT at order time
+  unitCostCents  Int? // filled later by costing module (costing-ready)
+  lineTotalCents Int
+  attributes     Json?
+
+  order   Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model Payment {
+  id            String        @id @default(cuid())
+  orderId       String
+  tier          PaymentTier
+  method        PaymentMethod @default(TRANSFERENCIA)
+  amountCents   Int
+  reference     String? // transfer ref / receipt
+  paidAt        DateTime      @default(now())
+  // Not every payment is immediately verified:
+  confirmedById String?
+  confirmedAt   DateTime?
+  createdById   String?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([orderId, confirmedAt])
+  @@map("payments")
+}
+
+enum DeliveryType {
+  PICKUP
+  INTERNAL
+  THIRD_PARTY
+}
+
+enum DeliveryStatus {
+  PENDIENTE
+  EN_RUTA
+  ENTREGADO
+  FALLIDO
+}
+
+model Delivery {
+  id           String         @id @default(cuid())
+  orderId      String         @unique
+  type         DeliveryType   @default(PICKUP)
+  status       DeliveryStatus @default(PENDIENTE)
+  address      String? // snapshot at delivery time
+  zone         String?
+  feeCents     Int            @default(0)
+  scheduledAt  DateTime?
+  deliveredAt  DateTime?
+  courierName  String?
+  assignedToId String? // Repartidor user id
+  notes        String?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@map("deliveries")
+}
+
+model OrderStatusHistory {
+  id          String       @id @default(cuid())
+  orderId     String
+  fromStatus  OrderStatus?
+  toStatus    OrderStatus
+  reason      String?
+  changedById String?
+  changedAt   DateTime     @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_status_history")
+}
+
+// ===========================================================================
+// PRODUCTION — order-level status + granular tasks
+// ===========================================================================
+
+enum ProductionStatus {
+  PENDIENTE
+  PREPARANDO_MEZCLA
+  HORNEANDO
+  ENFRIANDO
+  RELLENANDO
+  CUBRIENDO
+  DECORANDO
+  EMPACANDO
+  FINALIZADO
+}
+
+model ProductionOrder {
+  id           String           @id @default(cuid())
+  companyId    String
+  orderId      String           @unique
+  status       ProductionStatus @default(PENDIENTE)
+  assignedToId String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  notes        String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  company       Company                   @relation(fields: [companyId], references: [id])
+  order         Order                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  tasks         ProductionTask[]
+  statusHistory ProductionStatusHistory[]
+
+  @@index([companyId, status])
+  @@map("production_orders")
+}
+
+enum ProductionTaskType {
+  PREPARAR_MEZCLA
+  HORNEAR
+  ENFRIAR
+  RELLENAR
+  CRUMB_COAT
+  DECORACION_FINAL
+  EMPAQUE
+  OTRO
+}
+
+enum ProductionTaskStatus {
+  PENDIENTE
+  EN_PROGRESO
+  FINALIZADO
+  OMITIDO
+}
+
+model ProductionTask {
+  id                String               @id @default(cuid())
+  companyId         String
+  productionOrderId String
+  type              ProductionTaskType   @default(OTRO)
+  name              String
+  status            ProductionTaskStatus @default(PENDIENTE)
+  sequence          Int                  @default(0) // execution order
+  displayOrder      Int                  @default(0) // UI ordering
+  assignedToId      String?
+  estimatedMinutes  Int?
+  actualMinutes     Int?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  company         Company         @relation(fields: [companyId], references: [id])
+  productionOrder ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+
+  @@index([productionOrderId, sequence])
+  @@index([companyId, status])
+  @@map("production_tasks")
+}
+
+model ProductionStatusHistory {
+  id                String            @id @default(cuid())
+  productionOrderId String
+  fromStatus        ProductionStatus?
+  toStatus          ProductionStatus
+  changedById       String?
+  changedAt         DateTime          @default(now())
+
+  productionOrder ProductionOrder @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+
+  @@index([productionOrderId])
+  @@map("production_status_history")
+}
+
+// ===========================================================================
+// CALENDAR
+// ===========================================================================
+
+enum CalendarEntryType {
+  ENTREGA
+  PRODUCCION
+  EVENTO
+  OTRO
+}
+
+model CalendarEntry {
+  id        String            @id @default(cuid())
+  companyId String
+  type      CalendarEntryType @default(ENTREGA)
+  title     String
+  refType   String?
+  refId     String?
+  startAt   DateTime
+  endAt     DateTime?
+  createdAt DateTime          @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, startAt])
+  @@map("calendar_entries")
+}
+
+// ===========================================================================
+// BILLING — SRI electronic documents (prepared from day 1; MVP does not submit)
+// ===========================================================================
+
+enum DocumentType {
+  FACTURA
+  NOTA_VENTA // RIMPE Negocio Popular emite Nota de Venta (sin IVA)
+  NOTA_CREDITO
+  NOTA_DEBITO
+  COMPROBANTE_RETENCION // future
+}
+
+enum DocumentStatus {
+  DRAFT
+  GENERATED
+  SIGNED
+  SENT
+  AUTHORIZED
+  REJECTED
+  RETURNED
+}
+
+enum SriEnvironment {
+  TEST
+  PROD
+}
+
+model ElectronicDocument {
+  id          String         @id @default(cuid())
+  companyId   String
+  orderId     String?
+  type        DocumentType   @default(FACTURA)
+  status      DocumentStatus @default(DRAFT)
+  environment SriEnvironment @default(TEST)
+
+  customerName           String?
+  customerIdentification String?
+  subtotalCents          Int    @default(0)
+  taxCents               Int    @default(0)
+  totalCents             Int    @default(0)
+
+  claveAcceso         String?   @unique
+  authorizationNumber String?
+  authorizationDate   DateTime?
+  sriMessages         Json?
+  xmlUrl              String?
+  pdfUrl              String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company                  @relation(fields: [companyId], references: [id])
+  order   Order?                   @relation(fields: [orderId], references: [id])
+  items   ElectronicDocumentItem[]
+
+  @@index([companyId, status])
+  @@map("electronic_documents")
+}
+
+model ElectronicDocumentItem {
+  id             String @id @default(cuid())
+  documentId     String
+  description    String
+  quantity       Int    @default(1)
+  unitPriceCents Int
+  taxRateCode    String
+  taxCents       Int    @default(0)
+  lineTotalCents Int
+
+  document ElectronicDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("electronic_document_items")
+}
+
+model TaxRate {
+  id            String    @id @default(cuid())
+  companyId     String
+  code          String // "IVA_15"
+  name          String
+  percentage    Decimal   @db.Decimal(5, 2) // 15.00
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  isActive      Boolean   @default(true)
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, code, effectiveFrom])
+  @@index([companyId, isActive])
+  @@map("tax_rates")
+}
+
+model DocumentSequence {
+  id            String       @id @default(cuid())
+  companyId     String
+  documentType  DocumentType
+  establishment String // "001"
+  emissionPoint String // "001"
+  current       Int          @default(0)
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, documentType, establishment, emissionPoint])
+  @@map("document_sequences")
+}
+
+model BillingConfig {
+  id                   String         @id @default(cuid())
+  companyId            String         @unique
+  ruc                  String?
+  razonSocial          String?
+  nombreComercial      String?
+  direccionMatriz      String?
+  establishment        String         @default("001")
+  emissionPoint        String         @default("001")
+  environment          SriEnvironment @default(TEST)
+  obligadoContabilidad Boolean        @default(false)
+  taxpayerRegime       String? // e.g. "RIMPE_NEGOCIO_POPULAR" (no IVA, Nota de Venta)
+  certificateRef       String? // encrypted .p12 reference
+  updatedAt            DateTime       @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@map("billing_config")
+}
+
+// ===========================================================================
+// PLATFORM — media, notifications, settings, feature flags, integrations,
+//            activity feed, audit. (Jobs/queue handled by pg-boss tables.)
+// ===========================================================================
+
+enum MediaVisibility {
+  PRIVATE
+  PUBLIC_SIGNED
+}
+
+model MediaObject {
+  id          String          @id @default(cuid())
+  companyId   String
+  ownerModule String
+  ownerType   String? // polymorphic owner (kept for generic attachments)
+  ownerId     String?
+  orderId     String? // explicit relation for order attachments
+  key         String
+  mimeType    String
+  sizeBytes   Int
+  checksum    String?
+  visibility  MediaVisibility @default(PRIVATE)
+  createdAt   DateTime        @default(now())
+  createdById String?
+
+  company Company @relation(fields: [companyId], references: [id])
+  order   Order?  @relation(fields: [orderId], references: [id])
+
+  @@index([companyId, ownerType, ownerId])
+  @@index([orderId])
+  @@map("media_objects")
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  WHATSAPP
+  PUSH
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  READ
+}
+
+model NotificationTemplate {
+  id       String              @id @default(cuid())
+  key      String              @unique
+  channel  NotificationChannel
+  locale   String              @default("es-EC")
+  subject  String?
+  body     String
+  isActive Boolean             @default(true)
+
+  @@map("notification_templates")
+}
+
+model Notification {
+  id              String              @id @default(cuid())
+  companyId       String
+  channel         NotificationChannel
+  status          NotificationStatus  @default(PENDING)
+  recipientUserId String?
+  toAddress       String?
+  templateKey     String?
+  payload         Json?
+  sentAt          DateTime?
+  readAt          DateTime?
+  createdAt       DateTime            @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, recipientUserId, status])
+  @@map("notifications")
+}
+
+model Setting {
+  id          String   @id @default(cuid())
+  companyId   String
+  key         String // "orders.reservationCents"=1000, "orders.depositPercent"=50
+  value       Json
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, key])
+  @@map("settings")
+}
+
+model FeatureFlag {
+  id          String   @id @default(cuid())
+  companyId   String? // null = global default
+  key         String
+  isEnabled   Boolean  @default(false)
+  targeting   Json? // { roles, userIds, percentage }
+  description String?
+  updatedAt   DateTime @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, key])
+  @@map("feature_flags")
+}
+
+enum IntegrationType {
+  WHATSAPP
+  PAYMENT_GATEWAY
+  ECOMMERCE
+  EMAIL
+  SRI_TRANSPORT
+}
+
+model Integration {
+  id        String          @id @default(cuid())
+  companyId String
+  type      IntegrationType
+  provider  String
+  isEnabled Boolean         @default(false)
+  config    Json?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  company     Company                 @relation(fields: [companyId], references: [id])
+  credentials IntegrationCredential[]
+  webhooks    WebhookEvent[]
+
+  @@unique([companyId, type, provider])
+  @@map("integrations")
+}
+
+model IntegrationCredential {
+  id             String   @id @default(cuid())
+  integrationId  String
+  keyName        String
+  encryptedValue String // encrypted at rest; never logged
+  createdAt      DateTime @default(now())
+
+  integration Integration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, keyName])
+  @@map("integration_credentials")
+}
+
+model WebhookEvent {
+  id            String    @id @default(cuid())
+  integrationId String?
+  provider      String
+  eventType     String?
+  payload       Json
+  processedAt   DateTime?
+  receivedAt    DateTime  @default(now())
+
+  integration Integration? @relation(fields: [integrationId], references: [id])
+
+  @@index([provider, processedAt])
+  @@map("webhook_events")
+}
+
+model ActivityEntry {
+  id         String   @id @default(cuid())
+  companyId  String
+  actorId    String?
+  verb       String
+  entityType String?
+  entityId   String?
+  summary    String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, createdAt])
+  @@index([companyId, entityType, entityId])
+  @@map("activity_entries")
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  companyId  String
+  userId     String?
+  entityType String
+  entityId   String
+  action     AuditAction
+  before     Json?
+  after      Json?
+  createdAt  DateTime    @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, entityType, entityId])
+  @@index([companyId, createdAt])
+  @@map("audit_logs")
+}
