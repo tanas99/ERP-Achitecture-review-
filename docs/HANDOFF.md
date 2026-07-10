@@ -18,13 +18,15 @@ should be able to continue the project from here without any additional context.
 **In progress — Phase 3 (Quotations) COMPLETE. Working continuously (no per-milestone
 approval gates — the user asked to run straight through each whole process).**
 
-Done since last checkpoint: full CRM (lead list/detail/create/edit/activities, customer
-list/detail/addresses/tags/notes/timeline); visual system restyled to a minimalist
-white + soft-pink, no-emoji theme; **Quotations module complete** (create with line items,
-list, detail, status changes, and **accept → convert lead to customer**). **Business rule
-correction:** the shop is **RIMPE Negocio Popular (RUC 0924660293001) — no IVA**; tax is
-configured to 0% (data, not code) and document type is **Nota de Venta**. 49/49 unit tests
-pass; flows validated against a real ephemeral PostgreSQL. Next process: **Pedidos (Orders)**.
+Done: full CRM; minimalist white+soft-pink no-emoji theme; **Quotations** (create, list,
+detail, statuses, accept→convert lead to customer); **RIMPE Negocio Popular (RUC
+0924660293001) — no IVA** (tax 0% as data, Nota de Venta); **Pedidos/Orders complete**
+(create from approved quotation with immutable customer snapshot, payments with
+paid/balance/status, delivery + snapshot, confirm → generates the production order with a
+default kitchen task checklist, order status machine + history); **Producción complete**
+(kitchen kanban board, production status + history, task management). Repo pushed to GitHub:
+https://github.com/tanas99/ERP-Achitecture-review- . 54/54 unit tests pass; every flow
+validated against a real ephemeral PostgreSQL. Next process: **Calendario**, then **Panel/Dashboard**.
 
 --- (historical note below) ---
 Earlier checkpoint: Phase 2 (CRM) Milestone 1 delivered and awaiting approval.
