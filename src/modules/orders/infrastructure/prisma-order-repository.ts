@@ -287,10 +287,33 @@ export class PrismaOrderRepository implements OrderRepository {
           changedById: ctx.userId,
         },
       });
-      // Business rule: confirming an order generates its production order.
+      // Business rule: confirming an order generates its production order,
+      // pre-loaded with the standard kitchen task checklist.
       if (status === "CONFIRMADO" && !order.productionOrder) {
+        const DEFAULT_TASKS = [
+          { type: "PREPARAR_MEZCLA" as const, name: "Preparar mezcla" },
+          { type: "HORNEAR" as const, name: "Hornear" },
+          { type: "ENFRIAR" as const, name: "Enfriar" },
+          { type: "RELLENAR" as const, name: "Rellenar" },
+          { type: "CRUMB_COAT" as const, name: "Crumb coat" },
+          { type: "DECORACION_FINAL" as const, name: "Decoración final" },
+          { type: "EMPAQUE" as const, name: "Empaque" },
+        ];
         await tx.productionOrder.create({
-          data: { companyId: ctx.companyId, orderId, status: "PENDIENTE" },
+          data: {
+            companyId: ctx.companyId,
+            orderId,
+            status: "PENDIENTE",
+            tasks: {
+              create: DEFAULT_TASKS.map((t, i) => ({
+                companyId: ctx.companyId,
+                type: t.type,
+                name: t.name,
+                sequence: i + 1,
+                displayOrder: i + 1,
+              })),
+            },
+          },
         });
       }
     });
