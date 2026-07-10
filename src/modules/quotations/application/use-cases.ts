@@ -79,6 +79,44 @@ export function makeSetQuotationStatus(repo: QuotationRepository) {
   };
 }
 
+/**
+ * Accept a quotation. Business rule (docs/flujo-conversion-lead-cliente.md):
+ * accepting a quotation converts its Lead into a Customer (if not already), then
+ * links the quotation to that customer. `convertLead` is the CRM public API.
+ */
+export function makeAcceptQuotation(
+  repo: QuotationRepository,
+  convertLead: (
+    ctx: RequestContext,
+    leadId: string,
+  ) => Promise<Result<{ customerId: string }, DomainError>>,
+) {
+  return async (
+    ctx: RequestContext,
+    quotationId: string,
+  ): Promise<Result<{ customerId: string | null }, DomainError>> => {
+    authorize(ctx, "quotations:write");
+    const q = await repo.findById(ctx, quotationId);
+    if (!q) return { ok: false, error: new NotFoundError("Cotización no encontrada.") };
+    if (q.status === "APROBADA") return ok({ customerId: q.customerId });
+
+    let customerId = q.customerId;
+    if (!customerId) {
+      if (!q.leadId) {
+        return {
+          ok: false,
+          error: new DomainError("DOMAIN_RULE", "La cotización no tiene lead ni cliente."),
+        };
+      }
+      const conv = await convertLead(ctx, q.leadId);
+      if (!conv.ok) return conv;
+      customerId = conv.data.customerId;
+    }
+    await repo.accept(ctx, quotationId, customerId);
+    return ok({ customerId });
+  };
+}
+
 export function makeListQuotationParties(repo: QuotationDirectoryRepository) {
   return async (ctx: RequestContext) => {
     authorize(ctx, "quotations:read");

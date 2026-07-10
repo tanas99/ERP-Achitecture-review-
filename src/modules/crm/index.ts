@@ -10,6 +10,7 @@ import {
   makeAddLeadActivity,
   makeAssignLead,
   makeChangeLeadStatus,
+  makeConvertLeadToCustomer,
   makeCreateLead,
   makeGetCustomer,
   makeGetLead,
@@ -37,6 +38,7 @@ export const updateLead = makeUpdateLead(leadRepo);
 export const addLeadActivity = makeAddLeadActivity(leadRepo);
 export const changeLeadStatus = makeChangeLeadStatus(leadRepo);
 export const assignLead = makeAssignLead(leadRepo);
+export const convertLeadToCustomer = makeConvertLeadToCustomer(leadRepo);
 export const getCustomer = makeGetCustomer(customerRepo);
 export const updateCustomer = makeUpdateCustomer(customerRepo);
 export const addCustomerAddress = makeAddCustomerAddress(customerRepo);

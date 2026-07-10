@@ -52,6 +52,8 @@ export interface LeadRepository {
     leadId: string,
     userId: string | null,
   ): Promise<void>;
+  /** Convert a lead into a customer (idempotent). Returns the customer id. */
+  convert(ctx: RequestContext, leadId: string): Promise<{ customerId: string }>;
 }
 
 export interface CustomerRepository {

@@ -5,6 +5,7 @@ import { getRequestContext } from "@/server/auth/context";
 import {
   createQuotation,
   setQuotationStatus,
+  acceptQuotation,
   type QuotationStatus,
 } from "@/modules/quotations";
 
@@ -29,4 +30,14 @@ export async function setQuotationStatusAction(
   if (!res.ok) throw new Error(res.error.message);
   revalidatePath(`/cotizaciones/${quotationId}`);
   revalidatePath("/cotizaciones");
+}
+
+export async function acceptQuotationAction(quotationId: string) {
+  const ctx = await getRequestContext();
+  const res = await acceptQuotation(ctx, quotationId);
+  if (!res.ok) throw new Error(res.error.message);
+  revalidatePath(`/cotizaciones/${quotationId}`);
+  revalidatePath("/cotizaciones");
+  revalidatePath("/clientes");
+  revalidatePath("/leads");
 }

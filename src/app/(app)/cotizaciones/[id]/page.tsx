@@ -41,6 +41,15 @@ export default async function QuotationDetailPage({
         <QuotationStatusActions quotationId={q.id} status={q.status} />
       </div>
 
+      {q.status === "APROBADA" && q.customerId && (
+        <div className="rounded-[var(--radius)] border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+          Cotización aprobada. El cliente está registrado.{" "}
+          <Link href={`/clientes/${q.customerId}`} className="underline">
+            Ver ficha del cliente
+          </Link>
+        </div>
+      )}
+
       <section className="rounded-[var(--radius)] border border-border bg-card p-5">
         <table className="w-full text-sm">
           <thead className="text-left text-muted-foreground">

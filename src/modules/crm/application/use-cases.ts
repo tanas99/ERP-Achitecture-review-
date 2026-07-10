@@ -211,6 +211,17 @@ export function makeRemoveCustomerTag(repo: CustomerRepository) {
   };
 }
 
+export function makeConvertLeadToCustomer(repo: LeadRepository) {
+  return async (
+    ctx: RequestContext,
+    leadId: string,
+  ): Promise<Result<{ customerId: string }, DomainError>> => {
+    authorize(ctx, "customers:write");
+    const res = await repo.convert(ctx, leadId);
+    return ok(res);
+  };
+}
+
 // ---- Customer detail (read + writes) ---------------------------------------
 export function makeGetCustomer(repo: CustomerRepository) {
   return async (

@@ -234,6 +234,54 @@ export class PrismaLeadRepository implements LeadRepository {
     ]);
   }
 
+  async convert(
+    ctx: RequestContext,
+    leadId: string,
+  ): Promise<{ customerId: string }> {
+    const lead = await db.lead.findFirst({
+      where: { id: leadId, companyId: ctx.companyId, deletedAt: null },
+    });
+    assertSameTenant(ctx, lead);
+    // Idempotent: a lead converts at most once.
+    if (lead!.convertedCustomerId) {
+      return { customerId: lead!.convertedCustomerId };
+    }
+
+    const now = new Date();
+    return db.$transaction(async (tx) => {
+      const customer = await tx.customer.create({
+        data: {
+          companyId: ctx.companyId,
+          name: lead!.name,
+          email: lead!.email,
+          phone: lead!.phone,
+          becameCustomerAt: now,
+          createdById: ctx.userId,
+        },
+        select: { id: true },
+      });
+      await tx.lead.update({
+        where: { id: leadId },
+        data: {
+          convertedCustomerId: customer.id,
+          convertedAt: now,
+          status: "GANADO",
+        },
+      });
+      await tx.customerTimelineEntry.create({
+        data: {
+          companyId: ctx.companyId,
+          customerId: customer.id,
+          type: "LEAD",
+          title: "Cliente creado desde lead",
+          occurredAt: now,
+          createdById: ctx.userId,
+        },
+      });
+      return { customerId: customer.id };
+    });
+  }
+
   async assign(
     ctx: RequestContext,
     leadId: string,

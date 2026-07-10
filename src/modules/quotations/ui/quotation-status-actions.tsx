@@ -4,11 +4,14 @@ import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import type { QuotationStatus } from "@/modules/quotations/domain/types";
-import { setQuotationStatusAction } from "@/app/(app)/cotizaciones/actions";
+import {
+  setQuotationStatusAction,
+  acceptQuotationAction,
+} from "@/app/(app)/cotizaciones/actions";
 
 /**
- * Status actions for a quotation (Milestone 1: send / reject / mark lost).
- * Accepting a quotation (which converts a lead to a customer) arrives in M2.
+ * Status actions for a quotation. Accepting converts the lead into a customer
+ * (docs/flujo-conversion-lead-cliente.md) and links the quotation to it.
  */
 export function QuotationStatusActions({
   quotationId,
@@ -26,6 +29,12 @@ export function QuotationStatusActions({
       router.refresh();
     });
   }
+  function accept() {
+    start(async () => {
+      await acceptQuotationAction(quotationId);
+      router.refresh();
+    });
+  }
 
   const terminal = status === "APROBADA" || status === "EXPIRADA";
   if (terminal) return null;
@@ -33,10 +42,13 @@ export function QuotationStatusActions({
   return (
     <div className="flex flex-wrap gap-2" aria-busy={pending}>
       {status === "BORRADOR" && (
-        <Button size="sm" onClick={() => set("ENVIADA")} disabled={pending}>
+        <Button size="sm" variant="outline" onClick={() => set("ENVIADA")} disabled={pending}>
           Marcar como enviada
         </Button>
       )}
+      <Button size="sm" onClick={accept} disabled={pending}>
+        Aceptar (convierte en cliente)
+      </Button>
       {status !== "RECHAZADA" && (
         <Button size="sm" variant="outline" onClick={() => set("RECHAZADA")} disabled={pending}>
           Rechazada

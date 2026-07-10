@@ -28,6 +28,12 @@ export interface QuotationRepository {
     quotationId: string,
     status: QuotationStatus,
   ): Promise<void>;
+  /** Mark APROBADA and link the resulting customer. */
+  accept(
+    ctx: RequestContext,
+    quotationId: string,
+    customerId: string,
+  ): Promise<void>;
 }
 
 /** Party (lead/customer) options for the create form. */

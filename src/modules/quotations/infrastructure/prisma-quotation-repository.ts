@@ -192,6 +192,22 @@ export class PrismaQuotationRepository implements QuotationRepository {
       data: { status, updatedById: ctx.userId },
     });
   }
+
+  async accept(
+    ctx: RequestContext,
+    quotationId: string,
+    customerId: string,
+  ): Promise<void> {
+    const q = await db.quotation.findUnique({
+      where: { id: quotationId },
+      select: { companyId: true },
+    });
+    assertSameTenant(ctx, q);
+    await db.quotation.update({
+      where: { id: quotationId },
+      data: { status: "APROBADA", customerId, updatedById: ctx.userId },
+    });
+  }
 }
 
 export class PrismaQuotationDirectoryRepository
