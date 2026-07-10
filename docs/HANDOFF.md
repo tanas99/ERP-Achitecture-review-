@@ -26,7 +26,15 @@ paid/balance/status, delivery + snapshot, confirm → generates the production o
 default kitchen task checklist, order status machine + history); **Producción complete**
 (kitchen kanban board, production status + history, task management). Repo pushed to GitHub:
 https://github.com/tanas99/ERP-Achitecture-review- . 54/54 unit tests pass; every flow
-validated against a real ephemeral PostgreSQL. Next process: **Calendario**, then **Panel/Dashboard**.
+validated against a real ephemeral PostgreSQL.
+
+**MVP COMPLETE** — all 8 MVP modules built: Auth, Users/RBAC, CRM (leads+customers),
+Quotations, Orders, Production, **Calendario** (monthly agenda of deliveries + events),
+**Panel/Dashboard** (KPI aggregation: deliveries today, in production, upcoming, receivable,
+pipeline, recent orders). 56/56 unit tests pass; all flows validated against a real PostgreSQL.
+Next: hardening + deploy to a persistent environment (prisma migrate deploy, seed, run), then
+deferred modules (Recipes, Inventory, Purchasing, Costing, Finance, Marketing, AI, Reports)
+and Billing/SRI activation. Note: the shop is RIMPE Negocio Popular → Nota de Venta, no IVA.
 
 --- (historical note below) ---
 Earlier checkpoint: Phase 2 (CRM) Milestone 1 delivered and awaiting approval.
